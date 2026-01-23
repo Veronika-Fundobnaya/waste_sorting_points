@@ -1,0 +1,1 @@
+python rso_project.py pipeline --bbox 37.20 55.50 37.95 55.97 --out-dir output --data-dir data --end-id 80000 --scan-workers 12 --rate-limit 4 --radius 800 --grid 500 --districts-geojson moscow_old_districts_125.geojson --district-population-csv moscow_population_2024_125districts.csv

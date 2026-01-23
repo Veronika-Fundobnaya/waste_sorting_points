@@ -1,0 +1,15 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# Excel temporary file
+~$*.xlsx
+
+# Log
+log/
+
+# Polygon files
+data/osm_exclusions__*.*
+
+# Output
+output/
