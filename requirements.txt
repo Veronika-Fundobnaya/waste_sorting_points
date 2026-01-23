@@ -1,0 +1,12 @@
+streamlit>=1.30
+pandas>=2.0
+numpy>=1.24
+requests>=2.31
+geopy>=2.4
+folium>=0.15
+pyproj>=3.6
+shapely>=2.0
+scipy>=1.10
+tqdm>=4.66
+# optional (only if you run pipeline with OSM exclusions on the server):
+osmnx>=2.0
