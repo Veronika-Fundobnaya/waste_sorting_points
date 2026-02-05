@@ -13,3 +13,6 @@ data/osm_exclusions__*.*
 
 # Output
 output/
+
+# Secret API Keys
+secrets.toml

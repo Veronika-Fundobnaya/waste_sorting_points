@@ -7,18 +7,47 @@ import folium
 from folium.plugins import MarkerCluster
 import streamlit.components.v1 as components
 
-# Keep rso_project.py in the same folder
-from rso_project import (
-    geocode_address,
-    nearest_points,
-    point_accepts_type,
-    WASTE_CATEGORIES,
-    patch_folium_html_for_compat,
-    sanitize_text,
-)
+import os
 
-st.set_page_config(page_title="Доступность пунктов РСО", layout="wide")
-st.title("Ближайшие пункты раздельного сбора отходов по адресу")
+# --- geocode.maps.co API key (optional, but strongly recommended for stable geocoding) ---
+# Put the key into Streamlit secrets as a root-level value:
+#   GEOCODE_MAPSCO_KEY = "..."
+# Streamlit will also expose root-level secrets as environment variables.
+# To be extra robust, we mirror st.secrets -> os.environ.
+try:
+    _k = None
+    try:
+        _k = st.secrets.get("GEOCODE_MAPSCO_KEY")
+    except Exception:
+        _k = None
+    if _k and not os.environ.get("GEOCODE_MAPSCO_KEY"):
+        os.environ["GEOCODE_MAPSCO_KEY"] = str(_k)
+except Exception:
+    pass
+
+# Import helpers from the project script (keep rso_project.py in the same folder)
+try:
+    from rso_project import (
+        geocode_address,
+        nearest_points,
+        point_accepts_type,
+        WASTE_CATEGORIES,
+        patch_folium_html_for_compat,
+        sanitize_text,
+    )
+except Exception:
+    # fallback for local testing in this sandbox
+    from rso_project_mapsco import (
+        geocode_address,
+        nearest_points,
+        point_accepts_type,
+        WASTE_CATEGORIES,
+        patch_folium_html_for_compat,
+        sanitize_text,
+    )
+
+st.set_page_config(page_title="RSO-доступность (демо)", layout="wide")
+st.title("RSO-доступность: ближайшие пункты раздельного сбора по адресу")
 
 st.markdown(
     """
@@ -39,7 +68,7 @@ with st.sidebar:
     points_path_str = st.text_input(
         "Путь к CSV точек",
         value=str(default_points if default_points.exists() else default_points_alt),
-        help="CSV создаётся командой: python rso_project.py pipeline ...",
+        help="CSV создаётся командой: python rso_project_final_v3_2.py pipeline ...",
     )
     k = st.number_input("Сколько точек показать", min_value=3, max_value=30, value=7, step=1)
     wt = st.selectbox("Тип отходов (фильтр)", ["(без фильтра)"] + list(WASTE_CATEGORIES.keys()))
@@ -56,7 +85,7 @@ if not points_path.exists():
     st.error(
         f"Не найден файл точек: {points_path}.\n\n"
         "Сначала запусти пайплайн. Пример:\n"
-        "python rso_project.py pipeline --bbox 37.2 55.5 37.95 55.97 --out-dir project_run --data-dir data"
+        "python rso_project_final_v3_2.py pipeline --bbox 37.2 55.5 37.95 55.97 --out-dir project_run --data-dir data"
     )
     st.stop()
 

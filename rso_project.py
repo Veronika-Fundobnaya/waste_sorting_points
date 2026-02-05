@@ -1622,33 +1622,36 @@ def patch_folium_html_for_compat(
     remove_leaflet_prefix: bool = True,
 ) -> None:
     """
-    Делает Folium/Leaflet HTML более совместимым и "живучим" в разных браузерах/сетях:
+    Make Folium HTML compatible with stricter/older JS engines and some school/corporate environments:
 
-      1) Убирает использование object spread "...{ ... }" внутри параметров L.map(...)
-         (в некоторых окружениях это даёт SyntaxError и карта становится пустой).
-      2) Исправляет незаконные octal-escape в template strings: "\2" -> "/2"
-         (адреса вида "32\2" ломают JS).
-      3) Опционально заменяет CDN Leaflet с jsDelivr на unpkg (иногда лучше работает при блокировках).
-      4) Опционально убирает "Leaflet" (ссылку/значок) из подписи карты, оставляя атрибуцию OSM.
+      1) Removes object spread usage "...{ ... }" inside map options (can break older JS parsers)
+      2) Fixes illegal octal escapes in template strings: "\\2" -> "/2" (addresses like "32\\2")
+      3) Optionally swaps Leaflet CDN from jsDelivr to unpkg (sometimes works better with tracking protection)
+      4) Optionally removes Leaflet attribution prefix/link (keeps OSM attribution!)
 
-    Важно: мы НЕ убираем атрибуцию OpenStreetMap — она должна оставаться.
+    Notes:
+      - Removing Leaflet prefix is done via JS: map.attributionControl.setPrefix('')
+      - We DO NOT remove OpenStreetMap attribution (it should stay).
     """
     try:
-        raw_lines = html_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        lines = html_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except Exception:
         return
 
-    # --- 1) Remove object spread "...{ ... }"
     out_lines: List[str] = []
     spread_open = 0
-    for line in raw_lines:
+
+    # 1) remove "...{"
+    for line in lines:
         if "...{" in line:
+            # remove token, but keep the rest
             new_line = line.replace("...{", "")
             if new_line.strip():
                 out_lines.append(new_line)
             spread_open += 1
             continue
 
+        # remove one matching closing brace for each "...{"
         if spread_open > 0 and re.match(r"^\s*\}\s*,?\s*$", line):
             spread_open -= 1
             continue
@@ -1657,10 +1660,10 @@ def patch_folium_html_for_compat(
 
     txt = "\n".join(out_lines)
 
-    # --- 2) Fix octal escapes like "\2" (commonly appears in addresses like "32\2")
+    # 2) Fix octal escapes like "\2" (commonly appears in addresses like "32\2")
     txt = re.sub(r"\\([0-9])", r"/\1", txt)
 
-    # --- 3) Swap Leaflet CDN if requested
+    # 3) Swap Leaflet CDN if requested
     if prefer_unpkg_leaflet:
         txt = txt.replace(
             "https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js",
@@ -1670,56 +1673,28 @@ def patch_folium_html_for_compat(
             "https://unpkg.com/leaflet@1.9.3/dist/leaflet.css",
         )
 
-    # --- 4) Remove Leaflet prefix/link in attribution (keep OSM attribution)
+    # 4) Remove Leaflet prefix/link in attribution (keep OSM attribution)
     if remove_leaflet_prefix:
-        # 4a) If there is already a setPrefix(...) call, force it to setPrefix(false)
-        txt = re.sub(
-            r"(\.attributionControl\.setPrefix\()\s*[^)]*(\))",
-            r"\1false\2",
-            txt,
-        )
-
-        # 4b) Add CSS fallback to hide leaflet link even if prefix wasn't removed for some reason
-        css_marker = "/* rso_hide_leaflet_prefix */"
-        if css_marker not in txt:
-            css = (
-                "\n<style>\n"
-                f"{css_marker}\n"
-                ".leaflet-control-attribution a[href*=\"leafletjs.com\"]{display:none!important;}\n"
-                ".leaflet-control-attribution a[href*=\"leafletjs.com\"]:after{content:\"\";}\n"
-                "</style>\n"
-            )
-            if "</head>" in txt:
-                txt = txt.replace("</head>", css + "</head>", 1)
-            else:
-                txt = css + txt
-
-        # 4c) If no setPrefix call exists, inject a robust snippet that finds map_* variables on window
-        if "attributionControl.setPrefix" not in txt:
-            inject = (
-                "\n<script>\n"
-                "try {\n"
-                "  for (var k in window) {\n"
-                "    if (!Object.prototype.hasOwnProperty.call(window, k)) continue;\n"
-                "    if (typeof k === 'string' && k.indexOf('map_') === 0) {\n"
-                "      var m = window[k];\n"
-                "      if (m && m.attributionControl && m.attributionControl.setPrefix) {\n"
-                "        m.attributionControl.setPrefix(false);\n"
-                "      }\n"
-                "    }\n"
-                "  }\n"
-                "} catch(e) {}\n"
-                "</script>\n"
-            )
-            if "</body>" in txt:
-                txt = txt.replace("</body>", inject + "</body>", 1)
-            else:
-                txt = txt + inject
+        m = re.search(r"var\s+(map_[A-Za-z0-9_]+)\s*=\s*L\.map\(", txt)
+        if m:
+            map_var = m.group(1)
+            if "attributionControl.setPrefix" not in txt:
+                inject = (
+                    "\n<script>\n"
+                    f"try {{ {map_var}.attributionControl.setPrefix(''); }} catch(e) {{}}\n"
+                    "</script>\n"
+                )
+                # insert before </body> if possible
+                if "</body>" in txt:
+                    txt = txt.replace("</body>", inject + "</body>")
+                else:
+                    txt = txt + inject
 
     try:
         html_path.write_text(txt, encoding="utf-8")
     except Exception:
         pass
+
 
 def _safe_slug(s: str) -> str:
     """Safe slug for filenames (keeps Cyrillic, replaces other chars)."""
@@ -1786,8 +1761,8 @@ def add_district_choropleths_to_map(
     Adds per-district choropleth layers to an existing Folium map.
 
     Layers added (for each waste type):
-      - "Картограмма (покрытие): <тип>"     colored by coverage_share (% of district area within radius_m)
-      - "Картограмма (точек на 10 тыс.): <тип>" colored by points_per_10k
+      - "Хороплет (покрытие): <тип>"     colored by coverage_share (% of district area within radius_m)
+      - "Хороплет (точек на 10 тыс.): <тип>" colored by points_per_10k
 
     Also saves static PNG images for each choropleth (optional) to:
       out_dir / "choropleth_images" / *.png
@@ -1914,7 +1889,7 @@ def add_district_choropleths_to_map(
         # Coverage layer
         _add_layer(
             gj_props=gj_w,
-            layer_name=f"Картограмма (покрытие): {wt} (R={int(radius_m)}м)",
+            layer_name=f"Хороплет (покрытие): {wt} (R={int(radius_m)}м)",
             metric_field=f"{type_key}_covpct",
             cmap_name="YlGn_09",
             vmin=cov_vmin,
@@ -1926,7 +1901,7 @@ def add_district_choropleths_to_map(
         # Points-per-10k layer
         _add_layer(
             gj_props=gj_w,
-            layer_name=f"Картограмма (точек на 10 тыс.): {wt}",
+            layer_name=f"Хороплет (точек на 10 тыс.): {wt}",
             metric_field=f"{type_key}_pp10k",
             cmap_name="YlOrRd_09",
             vmin=pp_vmin,
@@ -2881,118 +2856,118 @@ def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
 
 def geocode_address(address: str, *, language: str = "ru") -> Tuple[float, float]:
     """
-    Геокодирование адреса -> (lon, lat).
+    Геокодирование адреса (перевод адреса в координаты) с несколькими источниками.
 
-    1) Если пользователь ввёл координаты в формате "55.75, 37.61" или "37.61 55.75",
-       функция распознает их и НЕ делает сетевые запросы.
-    2) Иначе пытаемся геокодировать через несколько открытых провайдеров (без API-ключей),
-       с ретраями и fallback, чтобы мини‑сервис работал в разных сетях/странах.
+    Поддерживает ввод координат напрямую в формате: "55.75, 37.61" (широта, долгота),
+    а также "37.61, 55.75" (долгота, широта).
 
-    Провайдеры (по очереди):
-      - Nominatim (OpenStreetMap)
-      - geocode.maps.co (публичный прокси‑сервис)
-      - Photon (Komoot)
+    Порядок провайдеров:
+      1) geocode.maps.co (если указан API‑ключ в переменной окружения GEOCODE_MAPSCO_KEY)
+      2) Nominatim (OpenStreetMap)
+      3) Photon (Komoot)
+
+    Возвращает (lon, lat).
     """
     if requests is None:
         raise RuntimeError("requests is required. Install: pip install requests")
 
-    q = (address or "").strip()
+    addr = str(address or "").strip()
+    if not addr:
+        raise RuntimeError("Пустой адрес. Введите адрес или координаты (например: 55.75, 37.61).")
 
-    # --- 0) Координаты вместо адреса (чтобы не зависеть от геокодеров)
-    # Требуем десятичную часть, чтобы не спутать с номером дома/корпуса.
-    m = re.search(r"([-+]?\d+[\.,]\d+)\s*[,\s]+\s*([-+]?\d+[\.,]\d+)", q)
+    # ---------------------------------------------------------
+    # 0) Если пользователь ввёл координаты, парсим их без сети
+    # ---------------------------------------------------------
+    m = re.match(r"^\s*([+-]?\d+(?:[\.,]\d+)?)\s*[,;\s]\s*([+-]?\d+(?:[\.,]\d+)?)\s*$", addr)
     if m:
         a = float(m.group(1).replace(",", "."))
         b = float(m.group(2).replace(",", "."))
-        # определяем (lat, lon) по диапазонам
-        if abs(a) <= 90 and abs(b) <= 180:
-            lat, lon = a, b
-        elif abs(a) <= 180 and abs(b) <= 90:
+        # эвристика: если первая величина выходит за диапазон широты, то это долгота
+        if abs(a) > 90 and abs(b) <= 90:
             lon, lat = a, b
         else:
-            # если оба "влезают" — считаем первым lat (самый частый формат)
             lat, lon = a, b
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise RuntimeError("Координаты выглядят некорректно. Пример: 55.75, 37.61")
         return float(lon), float(lat)
 
-    headers = {
-        "User-Agent": "rso-school-project/2.0 (school project; contact: none)",
-        "Accept-Language": language,
-    }
-
-    def _try_get_json(url: str, params: dict, *, timeout: int = 20, tries: int = 3, backoff_s: float = 0.8):
-        last_err = None
-        for attempt in range(tries):
-            try:
-                r = requests.get(url, params=params, headers=headers, timeout=timeout)
-                r.raise_for_status()
-                return r.json()
-            except Exception as e:
-                last_err = e
-                # небольшая пауза, чтобы не попадать в анти‑бот ограничения
-                time.sleep(backoff_s * (1.6 ** attempt))
-        raise last_err  # type: ignore
-
+    ua = "rso-school-project/1.0 (geocoding; educational use)"
     errors: List[str] = []
 
-    # --- 1) Nominatim (OSM)
+    def _req_json(url: str, params: Dict[str, object], headers: Dict[str, str], timeout: int = 20) -> object:
+        r = requests.get(url, params=params, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+
+    # ---------------------------------------------------------
+    # 1) geocode.maps.co — предпочтительный провайдер при наличии ключа
+    # ---------------------------------------------------------
+    key = (
+        os.environ.get("GEOCODE_MAPSCO_KEY")
+        or os.environ.get("MAPSCO_API_KEY")
+        or os.environ.get("GEOCODE_MAPSCO_API_KEY")
+    )
+    if key:
+        try:
+            url = "https://geocode.maps.co/search"
+            params = {"q": addr, "limit": 1, "accept-language": language}
+            headers = {"User-Agent": ua, "Accept-Language": language, "Authorization": f"Bearer {key}"}
+            js = _req_json(url, params=params, headers=headers, timeout=20)
+            if isinstance(js, list) and js:
+                lon = float(js[0].get("lon"))
+                lat = float(js[0].get("lat"))
+                return lon, lat
+            errors.append("geocode.maps.co: пустой результат")
+        except Exception as e:
+            # ключ не логируем
+            errors.append(f"geocode.maps.co: {type(e).__name__}: {e}")
+
+    # ---------------------------------------------------------
+    # 2) Nominatim (OSM) — запасной вариант
+    # ---------------------------------------------------------
     try:
         url = "https://nominatim.openstreetmap.org/search"
-        params = {
-            "q": q,
-            "format": "json",
-            "limit": 1,
-            "addressdetails": 1,
-            "accept-language": language,
-        }
-        js = _try_get_json(url, params, timeout=25, tries=3)
+        params = {"q": addr, "format": "json", "limit": 1, "accept-language": language}
+        headers = {"User-Agent": ua, "Accept-Language": language}
+        js = _req_json(url, params=params, headers=headers, timeout=20)
         if isinstance(js, list) and js:
             lon = float(js[0]["lon"])
             lat = float(js[0]["lat"])
             return lon, lat
-        errors.append("Nominatim: пустой ответ")
+        errors.append("Nominatim: пустой результат")
     except Exception as e:
-        errors.append(f"Nominatim: {e}")
+        errors.append(f"Nominatim: {type(e).__name__}: {e}")
 
-    # --- 2) geocode.maps.co (часто работает там, где nominatim режется/сбрасывается)
+    # ---------------------------------------------------------
+    # 3) Photon — ещё один запасной вариант
+    # ---------------------------------------------------------
     try:
-        url = "https://geocode.maps.co/search"
-        params = {"q": q}
-        js = _try_get_json(url, params, timeout=25, tries=2)
-        if isinstance(js, list) and js and ("lat" in js[0]) and ("lon" in js[0]):
-            lon = float(js[0]["lon"])
-            lat = float(js[0]["lat"])
-            return lon, lat
-        errors.append("geocode.maps.co: пустой/неожиданный ответ")
-    except Exception as e:
-        errors.append(f"geocode.maps.co: {e}")
-
-    # --- 3) Photon (Komoot)
-    try:
-        url = "https://photon.komoot.io/api/"
-        params = {"q": q, "limit": 1, "lang": language}
-        js = _try_get_json(url, params, timeout=25, tries=2)
+        url = "https://photon.komoot.io/api"
+        params = {"q": addr, "limit": 1, "lang": language}
+        headers = {"User-Agent": ua, "Accept-Language": language}
+        js = _req_json(url, params=params, headers=headers, timeout=20)
         if isinstance(js, dict):
             feats = js.get("features") or []
             if feats:
-                coords = feats[0].get("geometry", {}).get("coordinates", None)
-                if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                coords = (feats[0].get("geometry") or {}).get("coordinates")
+                if coords and len(coords) >= 2:
                     lon = float(coords[0])
                     lat = float(coords[1])
                     return lon, lat
-        errors.append("Photon: пустой/неожиданный ответ")
+        errors.append("Photon: пустой результат")
     except Exception as e:
-        errors.append(f"Photon: {e}")
+        errors.append(f"Photon: {type(e).__name__}: {e}")
 
-    # Если дошли сюда — все варианты не сработали
-    msg = (
-        "Не удалось определить координаты по адресу.\n"
-        "Возможные причины: временная недоступность геокодера, блокировки в сети или слишком общий запрос.\n\n"
-        "Попробуйте: \n"
+    hint = (
+        "Не удалось определить координаты по адресу. Возможные причины: временная недоступность геокодера, "
+        "блокировки в сети или слишком общий запрос.\n\n"
+        "Попробуйте:\n"
         "• уточнить адрес (город, улица, дом),\n"
         "• или ввести координаты в формате: 55.75, 37.61\n\n"
-        "Ошибки: " + " | ".join(errors[:3])
+        f"Ошибки: {' | '.join(errors) if errors else '(нет подробностей)'}"
     )
-    raise RuntimeError(msg)
+    raise RuntimeError(hint)
+
 
 def nearest_points(
     points_csv: Path,
