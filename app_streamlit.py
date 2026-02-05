@@ -46,8 +46,8 @@ except Exception:
         sanitize_text,
     )
 
-st.set_page_config(page_title="RSO-доступность (демо)", layout="wide")
-st.title("RSO-доступность: ближайшие пункты раздельного сбора по адресу")
+st.set_page_config(page_title="Поиск ближайших пунктов РСО", layout="wide")
+st.title("Доступность РСО: ближайшие пункты раздельного сбора отходов по адресу")
 
 st.markdown(
     """
